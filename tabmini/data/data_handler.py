@@ -3,7 +3,8 @@ from pmlb import fetch_data
 
 from tabmini.data import data_info
 from tabmini.types import TabminiDataset
-
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 def load_dataset(reduced: bool = False) -> TabminiDataset:
     """
@@ -33,6 +34,18 @@ def load_dataset(reduced: bool = False) -> TabminiDataset:
 
     return dataset
 
+def split_train_test(X, y):
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        return  X_train, X_test, y_train, y_test
+
+def normalize_data(X: pd.DataFrame):
+    try:
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        return pd.DataFrame(X_scaled, columns=X.columns)
+    except Exception as e:
+        print(f"Error occurred when applying normalization: {e}")
+        return X
 
 def load_dummy_dataset() -> TabminiDataset:
     """

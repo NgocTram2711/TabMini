@@ -35,7 +35,11 @@ def load_dummy_dataset() -> TabminiDataset:
     """
     return data_handler.load_dummy_dataset()
 
+def split_train_test(X, y) -> TabminiDataset:
+    return data_handler.split_train_test(X, y)
 
+def normalize_data(X: pd.DataFrame) -> TabminiDataset:
+    return data_handler.normalize_data(X)
 
 def compare(
         method_name: str,
