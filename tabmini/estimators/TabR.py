@@ -28,7 +28,6 @@ from loguru import logger
 from torch import Tensor
 from tqdm import tqdm
 
-import lib
 # from lib import KWArgs
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import accuracy_score, f1_score
@@ -38,6 +37,9 @@ import pandas as pd
 
 def get_device():
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+def get_d_out(n_classes: Optional[int]) -> int:
+    return 1 if n_classes is None or n_classes == 2 else n_classes
 
 class TabRModel(nn.Module):
     def __init__(
@@ -135,7 +137,7 @@ class TabRModel(nn.Module):
         self.head = nn.Sequential(
             Normalization(d_main),
             Activation(),
-            nn.Linear(d_main, lib.get_d_out(n_classes)),
+            nn.Linear(d_main, get_d_out(n_classes)),
         )
 
         # >>>
@@ -247,19 +249,19 @@ class TabRModel(nn.Module):
         device = k.device
         with torch.no_grad():
             if self.search_index is None:
-                self.search_index = (
-                    faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), d_main)
-                    if device.type == 'cuda'
-                    else faiss.IndexFlatL2(d_main)
-                )
+                self.search_index = faiss.IndexFlatL2(d_main)
             # Updating the index is much faster than creating a new one.
             self.search_index.reset()
+            candidate_k = candidate_k.cpu().numpy()
             self.search_index.add(candidate_k)  # type: ignore[code]
             distances: Tensor
             context_idx: Tensor
+            k_np = k.detach().cpu().numpy()
             distances, context_idx = self.search_index.search(  # type: ignore[code]
-                k, context_size + (1 if is_train else 0)
+                k_np, context_size + (1 if is_train else 0)
             )
+            context_idx = torch.tensor(context_idx, device=device)
+            distances = torch.tensor(distances, device=device)
             if is_train:
                 # NOTE: to avoid leakage, the index i must be removed from the i-th row,
                 # (because of how candidate_k is constructed).
@@ -288,9 +290,13 @@ class TabRModel(nn.Module):
         # can be reused. However, this is not a bottleneck, so let's keep it simple
         # and use the same code to compute `similarities` during both
         # training and evaluation.
+        print("Shape of k:", k.shape)
+        print("Shape of context_k:", context_k.shape)
+        context_k = torch.tensor(context_k, dtype=torch.float32, device=k.device)
+
         similarities = (
             -k.square().sum(-1, keepdim=True)
-            + (2 * (k[..., None, :] @ context_k.transpose(-1, -2))).squeeze(-2)
+            + (2 * (k.unsqueeze(1) @ context_k.transpose(-1, -2))).squeeze(-2)
             - context_k.square().sum(-1)
         )
         probs = F.softmax(similarities, dim=-1)
@@ -318,7 +324,7 @@ class TabR(BaseEstimator, ClassifierMixin):
         small_dataset: bool = False,
     ):
         self.time_limit = time_limit
-        self.device = device if device else get_device()
+        self.device = "cpu" #device if device else get_device()
         self.seed = seed
         self.kwargs = kwargs
         self.result_df = None
@@ -382,15 +388,15 @@ class TabR(BaseEstimator, ClassifierMixin):
             context_size = int(param["context_size"])
             
             # Initialize the model
-            current_model = TabR(
+            current_model = TabRModel(
                 n_num_features=X_train.shape[1],
                 n_bin_features=0,
                 cat_cardinalities=[],
                 n_classes=n_classes,
                 num_embeddings=None,
                 **self.default_model_params,
-            ).to(self.device)
-            
+            )
+            current_model = current_model.to(self.device)
             # Initialize optimizer
             optimizer = optim.Adam(current_model.parameters(), lr=learning_rate)
             
@@ -398,16 +404,19 @@ class TabR(BaseEstimator, ClassifierMixin):
             for epoch in range(epochs):
                 current_model.train()
                 optimizer.zero_grad()
-                
+                # y_train_tensor = y_train_tensor.to(self.device)
+
                 outputs = current_model(
-                    x_=X_train_dict,
+                    x_={k: v.to(self.device) for k, v in X_train_dict.items()},
                     y=y_train_tensor,
-                    candidate_x_=X_train_dict,
+                    candidate_x_={k: v.to(self.device) for k, v in X_train_dict.items()},
                     candidate_y=y_train_tensor,
                     context_size=context_size,
                     is_train=True,
                 )
-                
+
+                outputs = outputs.cpu() if outputs.is_cuda else outputs
+
                 if n_classes == 2:
                     # Binary classification
                     criterion = nn.BCEWithLogitsLoss()

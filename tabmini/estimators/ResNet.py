@@ -11,6 +11,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.base import BaseEstimator
 
 # ---------------------- Định nghĩa mô hình TabularResNet ---------------------- #
+def get_device():
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
 class ResidualBlock(nn.Module):
     def __init__(self, hidden_dim, dropout):
         super(ResidualBlock, self).__init__()
@@ -50,9 +53,9 @@ class TabularResNet(nn.Module):
 
 class ResNet(BaseEstimator):
     def __init__(self, input_dim, num_classes, hidden_dim=64, num_blocks=3,
-                 dropout=0.1, epochs=50, batch_size=16, lr=0.001, device="cpu"):
+                 dropout=0.1, epochs=50, batch_size=16, lr=0.001, device="cuda"):
         # Sử dụng CPU (hoặc CUDA nếu có)
-        self.device = torch.device(device if device in ["cpu", "cuda"] else "cpu")
+        self.device = device if device else get_device()
         self.epochs = epochs
         self.batch_size = batch_size
         self.lr = lr
@@ -71,9 +74,9 @@ class ResNet(BaseEstimator):
             "hidden_dim": [32, 64, 128, 256],
             "num_blocks": [1, 3, 5, 7],
             "dropout": [0.0, 0.1, 0.2, 0.3],
-            "lr": [0.0005, 0.001, 0.005, 0.01],
+            "lr": [0.0005, 0.001, 0.01],
             "batch_size": [8, 16, 32, 64],
-            "epochs": [10, 25, 50, 100]
+            "epochs": [10, 25, 50]
             # "hidden_dim": [32],
             # "num_blocks": [1],
             # "dropout": [0.0],

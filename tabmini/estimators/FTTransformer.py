@@ -66,6 +66,8 @@ class FTTransformerClassifier(BaseEstimator, ClassifierMixin):
                     last_layer_query_idx=[-1],  # Chỉ số lớp cuối để dự đoán
                     d_out=len(set(y))  # Số đầu ra
                 )
+            
+            model = model.to(self.device)
             optimizer = optim.Adam(model.parameters(), lr=0.001)
             criterion = nn.CrossEntropyLoss()
             
@@ -94,7 +96,7 @@ class FTTransformerClassifier(BaseEstimator, ClassifierMixin):
             f1 = f1_score(y_true, y_preds, average="binary")
             acc = accuracy_score(y_true, y_preds)
             results.append({**param, "accuracy": acc, "f1_score": f1})
-            
+            print(f"Lưu kết quả f1={acc} acc={f1}")
             if f1 > best_f1:
                 best_f1 = f1
                 best_model = model
