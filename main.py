@@ -110,7 +110,7 @@ def main(args):
         elif args.model == 8: 
             model = TabR(small_dataset=True)
         elif args.model == 11: 
-            model = SAINT(small_dataset = True)
+            model = SAINT(input_dim, small_dataset = True)
         # else:
         #    model_RF = RandomForest(small_dataset=True)
         #    model_RF.fit(X_train, y_train, X_test, y_test)
