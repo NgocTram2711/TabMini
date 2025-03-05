@@ -24,7 +24,7 @@ class RandomForest(BaseEstimator, ClassifierMixin):
 
         # Grid các tham số đã được cập nhật
         self.param_grid = {
-            "n_estimators": [100, 200, 300],
+            "n_estimators": [10, 20, 30],
             "max_depth": [10, 20, 30],
             "max_features": ["sqrt", "log2"],
             "min_samples_split": [2, 5, 10],
