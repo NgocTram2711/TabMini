@@ -6,10 +6,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.utils import check_X_y
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.base import BaseEstimator, ClassifierMixin
 from rtdl import FTTransformer
-
 
 def get_device():
     return "cuda" if torch.cuda.is_available() else "cpu"
@@ -35,6 +34,10 @@ class FTTransformerClassifier(BaseEstimator, ClassifierMixin):
             "dim": [32, 64] if small_dataset else [64, 128],
             "heads": [2, 4],
             "dropout": [0.1, 0.2, 0.3],
+            "ffn_d_hidden": [ 4, 6, 8],
+            "residual_dropout": [0.0, 0.1],
+            "n_blocks": [2],
+            "d_token": [8],
         }
 
     def fit(self, X, y, X_test, y_test):
@@ -60,12 +63,24 @@ class FTTransformerClassifier(BaseEstimator, ClassifierMixin):
         ]
 
         for param in param_combinations:
-            model = FTTransformer.make_default(
+            model = FTTransformer.make_baseline(
                     n_num_features= X.shape[1],  # Số lượng cột dữ liệu dạng số
                     cat_cardinalities=[],  # Độ lớn của mỗi feature dạng categorical
+                    d_token=int(param["d_token"]),
+                    n_blocks= int(param["n_blocks"]),
                     last_layer_query_idx=[-1],  # Chỉ số lớp cuối để dự đoán
+                    attention_dropout = param["dropout"],
+                    ffn_d_hidden = int(param["ffn_d_hidden"]),
+                    ffn_dropout = param["dropout"],
+                    residual_dropout=0.0,
                     d_out=len(set(y))  # Số đầu ra
                 )
+            
+            model = FTTransformer.make_default(
+                n_num_features=X.shape[1],
+                cat_cardinalities=[],
+                d_out=len(set(y)),
+            )
             
             model = model.to(self.device)
             optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -84,19 +99,34 @@ class FTTransformerClassifier(BaseEstimator, ClassifierMixin):
             model.eval()
             y_preds = []
             y_true = []
+            y_probs = []  # Store predicted probabilities for AUC-ROC
+
             with torch.no_grad():
                 for xb, yb in test_loader:
                     xb = xb.to(self.device)
                     # FTTransformer expects both x_num and x_cat as inputs
                     out = model(xb, None)  # or provide an empty tensor for x_cat
                     y_pred = torch.argmax(out, dim=1).cpu().numpy()
+                    y_prob = torch.softmax(out, dim=1).cpu().numpy()  # Predicted probabilities
                     y_preds.extend(y_pred)
                     y_true.extend(yb.numpy())
-                    
+                    y_probs.extend(y_prob[:, 1])  # Use probabilities of the positive class for AUC-ROC
+                   
             f1 = f1_score(y_true, y_preds, average="binary")
             acc = accuracy_score(y_true, y_preds)
-            results.append({**param, "accuracy": acc, "f1_score": f1})
-            print(f"Lưu kết quả f1={acc} acc={f1}")
+            precision = precision_score(y_true, y_preds, average="binary")
+            recall = recall_score(y_true, y_preds, average="binary")
+            auc_roc = roc_auc_score(y_true, y_probs)  # AUC-ROC requires probabilities
+
+            results.append({
+                **param,
+                "accuracy": acc,
+                "f1_score": f1,
+                "precision": precision,
+                "recall": recall,
+                "auc_roc": auc_roc
+            })
+            
             if f1 > best_f1:
                 best_f1 = f1
                 best_model = model
@@ -107,4 +137,5 @@ class FTTransformerClassifier(BaseEstimator, ClassifierMixin):
 
     def save_results(self, filename):
         if self.result_df is not None:
+            print(f"Lưu kết quả: filename={filename}")
             self.result_df.to_csv(filename, index=False)
