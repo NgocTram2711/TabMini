@@ -182,33 +182,3 @@ class ResNet(BaseEstimator):
         if self.result_df is not None:
             self.result_df.to_csv(filename, index=False)
 
-    def evaluate_model(model, X, y):
-        """
-        Chia dữ liệu thành 70% train và 30% test, huấn luyện mô hình và tính các chỉ số:
-        Accuracy, Precision, Recall, F1-score và AUC.
-        """
-        if hasattr(X, "values"):
-            X = X.values
-        if hasattr(y, "values"):
-            y = y.values
-
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.3, random_state=42, stratify=y
-        )
-
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-        y_proba = model.predict_proba(X_test)
-
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-        recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-        f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-
-        unique_labels = np.unique(y_test)
-        if len(unique_labels) == 2:
-            auc = roc_auc_score(y_test, y_proba[:, 1])
-        else:
-            auc = roc_auc_score(y_test, y_proba, multi_class='ovr')
-
-        return accuracy, precision, recall, f1, auc

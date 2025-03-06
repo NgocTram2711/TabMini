@@ -3,7 +3,7 @@ files = [
     [
      "analcatdata_aids", "analcatdata_asbestos", "analcatdata_bankruptcy", "analcatdata_creditscore",
      "analcatdata_cyyoung8092", "analcatdata_cyyoung9302", 
-    #  "analcatdata_fraud", 
+     "analcatdata_fraud", 
      "analcatdata_japansolvent",
      "labor", "lupus", "parity5", "postoperative_patient_data"],
     # M = 101 - 200 (10 datasets)
