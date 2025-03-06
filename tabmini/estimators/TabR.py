@@ -30,7 +30,7 @@ from tqdm import tqdm
 
 # from lib import KWArgs
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.utils.validation import check_X_y, check_array
 import torch.optim as optim
 import pandas as pd
@@ -332,20 +332,26 @@ class TabR(BaseEstimator, ClassifierMixin):
         self.best_params_ = None
         
         self.param_grid = {
-            "learning_rate": [0.001, 0.05, 0.1] if small_dataset else [0.001, 0.01, 0.05, 0.1],
-            "epochs": [10, 30, 50] if small_dataset else [10, 50, 100, 150],
-            "context_size": [3, 5] if small_dataset else [5, 10, 15],
+            "learning_rate": [0.001, 0.05, 0.1] ,
+            "epochs": [10, 30] ,
+            "context_size": [3, 5],
+            "d_main": [64, 128],
+            "encoder_n_blocks":[2,3],
+            "predictor_n_blocks":[1,2],
+            "context_dropout": [0.1,0.2],
+            "dropout0": [0.1,0.2],
+            "dropout1": [0.1,0.2],
         }
         
         self.default_model_params = {
-            "d_main": 64 if small_dataset else 128,
+            # "d_main": 64 if small_dataset else 128,
             "d_multiplier": 2,
-            "encoder_n_blocks": 2 if small_dataset else 3,
-            "predictor_n_blocks": 1 if small_dataset else 2,
+            # "encoder_n_blocks": 2 if small_dataset else 3,
+            # "predictor_n_blocks": 1 if small_dataset else 2,
             "mixer_normalization": "auto",
-            "context_dropout": 0.1,
-            "dropout0": 0.2,
-            "dropout1": "dropout0",
+            # "context_dropout": 0.1,
+            # "dropout0": 0.2,
+            # "dropout1": "dropout0",
             "normalization": "BatchNorm1d",
             "activation": "ReLU",
             "memory_efficient": False,
@@ -380,12 +386,16 @@ class TabR(BaseEstimator, ClassifierMixin):
         print(f"Training TabR model with {len(param_combinations)} parameter combinations")
         
         for i, param in enumerate(param_combinations):
-            print(f"\nTraining combination {i+1}/{len(param_combinations)}: {param}")
-            
             # Cast parameters to appropriate types
             learning_rate = float(param["learning_rate"])
             epochs = int(param["epochs"])
             context_size = int(param["context_size"])
+            d_main = int(param["d_main"])
+            encoder_n_blocks = int(param["encoder_n_blocks"])
+            predictor_n_blocks = int(param["predictor_n_blocks"])
+            context_dropout = param["context_dropout"]
+            dropout0 = param["dropout0"]
+            dropout1 = param["dropout1"]
             
             # Initialize the model
             current_model = TabRModel(
@@ -394,6 +404,12 @@ class TabR(BaseEstimator, ClassifierMixin):
                 cat_cardinalities=[],
                 n_classes=n_classes,
                 num_embeddings=None,
+                d_main = d_main,
+                encoder_n_blocks = encoder_n_blocks,
+                predictor_n_blocks = predictor_n_blocks,
+                context_dropout = context_dropout,
+                dropout0 = dropout0,
+                dropout1 = dropout1,
                 **self.default_model_params,
             )
             current_model = current_model.to(self.device)
@@ -432,6 +448,10 @@ class TabR(BaseEstimator, ClassifierMixin):
                 if (epoch + 1) % 10 == 0:
                     print(f"Epoch [{epoch+1}/{epochs}] - Loss: {loss.item():.4f}")
             
+            y_preds = []
+            y_true = []
+            y_probs = []  # Store predicted probabilities for AUC-ROC
+
             # Evaluation
             current_model.eval()
             with torch.no_grad():
@@ -443,29 +463,59 @@ class TabR(BaseEstimator, ClassifierMixin):
                     context_size=context_size,
                     is_train=False,
                 )
-                
+
                 if n_classes == 2:
                     # Binary classification
-                    y_pred = torch.sigmoid(y_pred.squeeze())
-                    y_pred = (y_pred > 0.5).long()
+                    y_prob = torch.sigmoid(y_pred.squeeze()).cpu().numpy()
+                    y_pred = (torch.sigmoid(y_pred.squeeze()) > 0.5).long().cpu().numpy()  # Predicted classes (0 or 1)
+                    y_probs.extend(y_prob)  # Use probabilities of the positive class for AUC-ROC
                 else:
                     # Multi-class classification
-                    y_pred = y_pred.argmax(dim=1)
-            
+                    y_prob = torch.softmax(y_pred, dim=1).cpu().numpy()  # Predicted probabilities for all classes
+                    y_pred = y_pred.argmax(dim=1).cpu().numpy()  # Predicted classes
+                    y_probs.extend(y_prob)  # Store probabilities for all classes
+
+                y_preds.extend(y_pred)
+                y_true.extend(y_test_tensor.cpu().numpy())
+
             # Calculate metrics
-            y_test_np = y_test_tensor.cpu().numpy()
-            y_pred_np = y_pred.cpu().numpy()
-            
-            acc = accuracy_score(y_test_np, y_pred_np)
-            
-            if n_classes <= 2:
-                f1 = f1_score(y_test_np, y_pred_np, average="binary")
+            acc = accuracy_score(y_true, y_preds)
+
+            if n_classes == 2:
+                f1 = f1_score(y_true, y_preds, average="binary")
+                # precision = precision_score(y_true, y_preds, average="binary")
+                # recall = recall_score(y_true, y_preds, average="binary")
+                auc_roc = roc_auc_score(y_true, y_probs)  # AUC-ROC requires probabilities of the positive class
             else:
-                f1 = f1_score(y_test_np, y_pred_np, average="weighted")
+                f1 = f1_score(y_true, y_preds, average="weighted")
+                # precision = precision_score(y_true, y_preds, average="weighted")
+                # recall = recall_score(y_true, y_preds, average="weighted")
+                auc_roc = roc_auc_score(y_true, y_probs, multi_class="ovr")  # One-vs-Rest AUC-ROC for multi-class
+            # Calculate metrics
+            
+            acc = accuracy_score(y_true, y_preds)
+    
+            if n_classes <= 2:
+                f1 = f1_score(y_true, y_preds, average="binary")
+                # precision = precision_score(y_true, y_preds, average="binary")
+                # recall = recall_score(y_true, y_preds, average="binary")
+                auc_roc = roc_auc_score(y_true, y_probs)  # AUC-ROC requires probabilities
+            else:
+                f1 = f1_score(y_true, y_preds, average="weighted")
+                # precision = precision_score(y_true, y_preds, average="weighted")
+                # recall = recall_score(y_true, y_preds, average="weighted")
+                auc_roc = roc_auc_score(y_true, y_prob, multi_class="ovr")  # One-vs-Rest AUC-ROC for multi-class
             
             # Store results
-            results.append({**param, "accuracy": acc, "f1_score": f1})
-            
+            results.append({
+                **param,
+                "accuracy": acc,
+                "f1_score": f1,
+                # "precision": precision,
+                # "recall": recall,
+                "auc_roc": auc_roc
+            })
+
             # Update best model
             if f1 > best_f1:
                 best_f1 = f1
@@ -476,44 +526,9 @@ class TabR(BaseEstimator, ClassifierMixin):
         self.result_df = pd.DataFrame(results).sort_values(by="f1_score", ascending=False)
         self.model = best_model
         
-        print("\nTraining completed. Best parameters:")
         print(self.best_params_)
-        print(f"Best F1 Score: {best_f1:.4f}")
         
         return self
-
-    def predict(self, X):
-        """
-        Predict class labels for X.
-        """
-        if self.model is None:
-            raise RuntimeError("Model has not been fitted yet.")
-            
-        X = check_array(X, accept_sparse=False)
-        X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
-        X_dict = {"num": X_tensor}
-        
-        self.model.eval()
-        with torch.no_grad():
-            # We need training data for the retrieval mechanism
-            # Here we're using a simplified approach - in practice you'd want to save the training data
-            outputs = self.model(
-                x_=X_dict,
-                y=None,
-                candidate_x_=X_dict,  # This should be training data in real usage
-                candidate_y=torch.zeros(X.shape[0], dtype=torch.long).to(self.device),  # Dummy values
-                context_size=int(self.best_params_["context_size"]),
-                is_train=False,
-            )
-            
-            if len(outputs.shape) > 1 and outputs.shape[1] > 1:
-                # Multi-class
-                predictions = outputs.argmax(dim=1)
-            else:
-                # Binary
-                predictions = (torch.sigmoid(outputs.squeeze()) > 0.5).long()
-            
-        return predictions.cpu().numpy()
 
     def save_results(self, filename):
         if self.result_df is not None:

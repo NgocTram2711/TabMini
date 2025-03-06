@@ -10,8 +10,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, precision_recall_curve
 
 def get_device():
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
+    return "cpu"
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, embed_dim, num_heads):
         super().__init__()
@@ -62,8 +61,6 @@ class Model(nn.Module):
 
         # Model architecture
          # Embedding layer
-        print(f"input_dim{input_dim}")
-        print(f"hidden_dim{hidden_dim}")
         self.embedding = nn.Embedding(input_dim, hidden_dim)
         self.relu = nn.ReLU()
         # Transformer blocks for Self-Attention
@@ -80,7 +77,6 @@ class Model(nn.Module):
             nn.Linear(hidden_dim // 2, output_dim),
             nn.Sigmoid()
         )
-
 
     def forward(self, X):
         # Self-Attention
@@ -123,7 +119,6 @@ class Model(nn.Module):
                 running_loss += loss.item()
 
             avg_loss = running_loss / len(train_loader)
-            print(f"Epoch {epoch+1}/{self.epochs}, Loss: {avg_loss:.4f}")
 
     def predict(self, X):
         X_tensor = torch.tensor(X, dtype=torch.long)
@@ -161,9 +156,11 @@ class SAINT(BaseEstimator, ClassifierMixin):
         self.param_grid = {
             "hidden_dim": [128, 256],
             "lr": [0.001, 0.0005],
-            "epochs": [300],
+            "epochs": [10, 20],
             "batch_size": [32, 64],
-            "dropout": [0.2, 0.3]
+            "dropout": [0.2, 0.3],
+            "num_heads": [ 4, 8],
+            "num_layers": [2, 4, 6]
         }
 
     def fit(self, X, y, X_test, y_test):
@@ -177,10 +174,6 @@ class SAINT(BaseEstimator, ClassifierMixin):
         # Convert to PyTorch tensors
         X_train, y_train = torch.tensor(X_train, dtype=torch.float32).to(self.device), torch.tensor(y_train, dtype=torch.long).to(self.device)
         X_test, y_test = torch.tensor(X_test, dtype=torch.float32).to(self.device), torch.tensor(y_test, dtype=torch.long).to(self.device)
-        
-        # Explicitly print the shapes to help debug
-        print(f"X_train shape: {X_train.shape}")
-        print(f"Number of classes: {num_classes}")
         
         # Create hyperparameter combinations
         param_combinations = [
@@ -200,7 +193,6 @@ class SAINT(BaseEstimator, ClassifierMixin):
             batch_size = int(params["batch_size"])
             dropout = float(params["dropout"])
 
-            print(f"Training model with: {params}")
             model = Model(self.input_dim, hidden_dim=hidden_dim, batch_size=batch_size, lr=lr, epochs=epochs, dropout=dropout).to(self.device)
             
             model.fit(X_train, y_train)
@@ -211,18 +203,28 @@ class SAINT(BaseEstimator, ClassifierMixin):
             X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
             y_prob = model.predict(X_test)
             precision, recall, thresholds = precision_recall_curve(y_test, y_prob)
-            best_threshold = thresholds[np.argmax(precision * recall)] if len(thresholds) > 0 else 0.5
+
+            if len(thresholds) > 0:
+                # Tính f1 score cho từng threshold (bỏ phần tử cuối của precision và recall)
+                f1_scores = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-8)
+                best_threshold = thresholds[np.argmax(f1_scores)]
+            else:
+                best_threshold = 0.5
+
             y_pred = (y_prob > best_threshold).astype(int)
             f1 = f1_score(y_test, y_pred, zero_division=1, average='weighted')
 
-            metrics = {
-                "accuracy": accuracy_score(y_test, y_pred),
-                "precision": precision_score(y_test, y_pred, zero_division=1),
-                "recall": recall_score(y_test, y_pred, zero_division=1),
+            accuracy = accuracy_score(y_test, y_pred)  # Loại bỏ dấu phẩy thừa
+            auc = roc_auc_score(y_test, y_prob)
+
+            results.append({
+                **params,
+                "accuracy": accuracy,
                 "f1_score": f1,
-                "auc": roc_auc_score(y_test, y_prob)
-            }
-            results.append(metrics)
+                "auc_roc": auc
+            })
+            print(f"f1 {f1}")
+
             if f1 > best_f1:
                 best_f1 = f1
                 best_model = model
@@ -250,4 +252,5 @@ class SAINT(BaseEstimator, ClassifierMixin):
 
     def save_results(self, filename):
         if self.result_df is not None:
+            print("saved")
             self.result_df.to_csv(filename, index=False)
