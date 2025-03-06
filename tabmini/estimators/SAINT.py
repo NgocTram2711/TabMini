@@ -7,54 +7,98 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.utils import check_X_y
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import train_test_split
-import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, precision_recall_curve
 
 def get_device():
-    return "cpu"
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.ff = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim), nn.ReLU(), nn.Linear(embed_dim, embed_dim)
+        )
+
+    def forward(self, x):
+        attn_output, _ = self.attention(x, x, x)
+        x = self.norm(x + attn_output)
+        ff_output = self.ff(x)
+        x = self.norm(x + ff_output)
+        return x
+
+
+class IntersampleAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.ff = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim), nn.ReLU(), nn.Linear(embed_dim, embed_dim)
+        )
+
+    def forward(self, x):
+        attn_output, _ = self.attention(x, x, x)
+        x = self.norm(x + attn_output)
+        ff_output = self.ff(x)
+        x = self.norm(x + ff_output)
+        return x
 
 # A minimal transformer-inspired model for tabular data
 class Model(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_classes, lr=0.001, epochs=10, batch_size=32, dropout=0.2, path=None, time_limit=None, seed=None):
+    def __init__(self, input_dim, hidden_dim=128, lr=0.001, epochs=10, batch_size=32, dropout=0.2, output_dim=1, num_heads=4, num_layers=2):
         super(Model, self).__init__()
 
         self.device = get_device()
-        self.time_limit = time_limit
-        self.path = path
-        self.seed = seed
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        self.num_classes = num_classes
+        self.batch_size = batch_size
+        
         self.lr = lr
         self.epochs = epochs
         self.batch_size = batch_size
         self.dropout = dropout
 
         # Model architecture
+         # Embedding layer
+        print(f"input_dim{input_dim}")
+        print(f"hidden_dim{hidden_dim}")
         self.embedding = nn.Embedding(input_dim, hidden_dim)
         self.relu = nn.ReLU()
-        self.transformer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=8)
+        # Transformer blocks for Self-Attention
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, batch_first=True)
+        self.self_attention = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # Inter-Sample Attention (Modeled as an extra attention layer)
+        self.inter_sample_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
         self.dropout_layer = nn.Dropout(p=self.dropout)
-        self.fc = nn.Linear(hidden_dim, num_classes)
+        # Fully connected layers
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, output_dim),
+            nn.Sigmoid()
+        )
+
 
     def forward(self, X):
+        # Self-Attention
         X = torch.clamp(X, min=0, max=self.embedding.num_embeddings - 1)
         
         X = X.to(self.device)
-
+        X = X.long()
         x = self.embedding(X)
-
         x = self.relu(x)
-        
-        x = self.transformer(x)  # Shape: (sequence_length, batch_size, hidden_dim)
+        x = self.self_attention(x)
+
+        # Inter-Sample Attention
+        x, _ = self.inter_sample_attention(x, x, x)
+        x = x.squeeze(1)
 
         x = self.dropout_layer(x)
-        x = x.mean(dim=1)
-        
-        x = self.fc(x)
-        
-        return x
+        # Final classification
+        return self.fc(x)
     
     def fit(self, X, y):
         X_tensor = torch.tensor(X, dtype=torch.long).to(self.device)
@@ -71,6 +115,7 @@ class Model(nn.Module):
             running_loss = 0.0
             for data, target in train_loader:
                 optimizer.zero_grad()
+                target = target.view(-1, 1)
                 output = self(data)  # Forward pass
                 loss = criterion(output, target)
                 loss.backward()
@@ -116,7 +161,7 @@ class SAINT(BaseEstimator, ClassifierMixin):
         self.param_grid = {
             "hidden_dim": [128, 256],
             "lr": [0.001, 0.0005],
-            "epochs": [10, 20],
+            "epochs": [300],
             "batch_size": [32, 64],
             "dropout": [0.2, 0.3]
         }
@@ -156,14 +201,28 @@ class SAINT(BaseEstimator, ClassifierMixin):
             dropout = float(params["dropout"])
 
             print(f"Training model with: {params}")
-            model = Model(self.input_dim, hidden_dim, num_classes, lr, epochs, batch_size, dropout).to(self.device)
+            model = Model(self.input_dim, hidden_dim=hidden_dim, batch_size=batch_size, lr=lr, epochs=epochs, dropout=dropout).to(self.device)
             
             model.fit(X_train, y_train)
-            
-            accuracy = model.score(X_test, y_test)
-            f1 = f1_score(y_test, model.predict(X_test), average='weighted')
 
-            results.append({**params, "accuracy": accuracy, "f1_score": f1})
+            model.eval()
+            print(model.predict(X_test))
+
+            X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
+            y_prob = model.predict(X_test)
+            precision, recall, thresholds = precision_recall_curve(y_test, y_prob)
+            best_threshold = thresholds[np.argmax(precision * recall)] if len(thresholds) > 0 else 0.5
+            y_pred = (y_prob > best_threshold).astype(int)
+            f1 = f1_score(y_test, y_pred, zero_division=1, average='weighted')
+
+            metrics = {
+                "accuracy": accuracy_score(y_test, y_pred),
+                "precision": precision_score(y_test, y_pred, zero_division=1),
+                "recall": recall_score(y_test, y_pred, zero_division=1),
+                "f1_score": f1,
+                "auc": roc_auc_score(y_test, y_prob)
+            }
+            results.append(metrics)
             if f1 > best_f1:
                 best_f1 = f1
                 best_model = model
