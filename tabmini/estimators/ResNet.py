@@ -65,24 +65,19 @@ class ResNet(BaseEstimator):
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         # Nếu dùng CPU, ghi đè hàm kiểm tra CUDA của optimizer
-        if self.device.type == "cpu":
+        if self.device == "cpu" or self.device == "cpu":
             self.optimizer._cuda_graph_capture_health_check = lambda: None
 
         self.result_df = None
         self.best_params_ = None
         self.param_grid = {
-            "hidden_dim": [32, 64, 128, 256],
-            "num_blocks": [1, 3, 5, 7],
-            "dropout": [0.0, 0.1, 0.2, 0.3],
+            "hidden_dim": [32, 64, 128],
+            "num_blocks": [1, 3, 5],
+            "dropout": [0.0, 0.1, 0.2],
             "lr": [0.0005, 0.001, 0.01],
-            "batch_size": [8, 16, 32, 64],
+            "batch_size": [8, 16, 32],
             "epochs": [10, 25, 50]
-            # "hidden_dim": [32],
-            # "num_blocks": [1],
-            # "dropout": [0.0],
-            # "lr": [0.0005],
-            # "batch_size": [8],
-            # "epochs": [10]
+            # Các giá trị khác có thể được bật nếu cần
         }
 
     def fit(self, X, y, X_test, y_test):
@@ -112,7 +107,7 @@ class ResNet(BaseEstimator):
         for param in param_combinations:
             # Khởi tạo mô hình với tham số hiện tại
             hidden_dim = int(param["hidden_dim"])
-            num_blocks=int(param["num_blocks"])
+            num_blocks = int(param["num_blocks"])
             current_model = TabularResNet(
                 input_dim=self.input_dim,
                 num_classes=self.num_classes,
@@ -121,7 +116,7 @@ class ResNet(BaseEstimator):
                 dropout=param["dropout"]
             ).to(self.device)
 
-            print(f"Creating model with: dim={self.input_dim}, depth={self.num_classes}, hidden_dim={hidden_dim}, num_blocks={num_blocks}")
+            print(f"Creating model with: input_dim={self.input_dim}, num_classes={self.num_classes}, hidden_dim={hidden_dim}, num_blocks={num_blocks}")
 
             # Khởi tạo optimizer và criterion
             optimizer = torch.optim.Adam(current_model.parameters(), lr=param["lr"])
@@ -140,26 +135,37 @@ class ResNet(BaseEstimator):
                     loss.backward()
                     optimizer.step()
 
-            # Đánh giá mô hình trên tập kiểm tra
+            # Đánh giá mô hình trên tập kiểm tra và tính các độ đo bổ sung
             current_model.eval()
             all_preds = []
             all_labels = []
+            all_probs = []
             with torch.no_grad():
                 for batch_X, batch_y in test_loader:
                     batch_X = batch_X.to(self.device)
                     batch_y = batch_y.to(self.device)
                     outputs = current_model(batch_X)
+                    probs = F.softmax(outputs, dim=1)
                     preds = torch.argmax(outputs, dim=1)
                     all_preds.extend(preds.cpu().numpy())
                     all_labels.extend(batch_y.cpu().numpy())
+                    all_probs.extend(probs.cpu().numpy())
 
-            # Tính toán F1 score và accuracy
+            # Tính toán các chỉ số: accuracy, f1, precision, recall, auc_roc
             f1 = f1_score(all_labels, all_preds, average="weighted")
             acc = accuracy_score(all_labels, all_preds)
+            prec = precision_score(all_labels, all_preds, average="weighted", zero_division=0)
+            rec = recall_score(all_labels, all_preds, average="weighted", zero_division=0)
+            # Tính AUC dựa trên số lượng class
+            if len(np.unique(all_labels)) == 2:
+                auc = roc_auc_score(all_labels, np.array(all_probs)[:, 1])
+            else:
+                auc = roc_auc_score(all_labels, np.array(all_probs), multi_class="ovr")
 
             # Lưu kết quả
-            results.append({**param, "accuracy": acc, "f1_score": f1})
-            print(f"Lưu kết quả f1={acc} acc={acc}")
+            results.append({**param, "accuracy": acc, "f1_score": f1, "precision": prec, "recall": rec, "auc_roc": auc})
+            print(f"Metrics: accuracy={acc}, f1_score={f1}, precision={prec}, recall={rec}, auc_roc={auc}")
+
             # Cập nhật mô hình tốt nhất
             if f1 > best_f1:
                 best_f1 = f1
@@ -172,11 +178,10 @@ class ResNet(BaseEstimator):
 
         return self
 
-    
     def save_results(self, filename):
         if self.result_df is not None:
             self.result_df.to_csv(filename, index=False)
-    
+
     def evaluate_model(model, X, y):
         """
         Chia dữ liệu thành 70% train và 30% test, huấn luyện mô hình và tính các chỉ số:
