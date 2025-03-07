@@ -46,30 +46,27 @@ class IntersampleAttention(nn.Module):
 
 # A minimal transformer-inspired model for tabular data
 class Model(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128, lr=0.001, epochs=10, batch_size=32, dropout=0.2, output_dim=1, num_heads=4, num_layers=2):
+    def __init__(self, input_dim, num_classes, hidden_dim=128,  lr=0.001, epochs=10, batch_size=32, dropout=0.2, output_dim=1, num_heads=4, num_layers=2):        
         super(Model, self).__init__()
-
         self.device = get_device()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        self.batch_size = batch_size
-        
+        self.num_classes = num_classes
         self.lr = lr
         self.epochs = epochs
         self.batch_size = batch_size
         self.dropout = dropout
 
         # Model architecture
-         # Embedding layer
-        self.embedding = nn.Embedding(input_dim, hidden_dim)
-        self.relu = nn.ReLU()
+        self.embedding = nn.Linear(input_dim, hidden_dim)
+
         # Transformer blocks for Self-Attention
         encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, batch_first=True)
         self.self_attention = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # Inter-Sample Attention (Modeled as an extra attention layer)
         self.inter_sample_attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
-        self.dropout_layer = nn.Dropout(p=self.dropout)
+
         # Fully connected layers
         self.fc = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
@@ -78,21 +75,15 @@ class Model(nn.Module):
             nn.Sigmoid()
         )
 
-    def forward(self, X):
+    def forward(self, x):
         # Self-Attention
-        X = torch.clamp(X, min=0, max=self.embedding.num_embeddings - 1)
-        
-        X = X.to(self.device)
-        X = X.long()
-        x = self.embedding(X)
-        x = self.relu(x)
-        x = self.self_attention(x)
+        x = self.embedding(x)
+        x = self.self_attention(x.unsqueeze(1)).squeeze(1)
 
         # Inter-Sample Attention
-        x, _ = self.inter_sample_attention(x, x, x)
+        x, _ = self.inter_sample_attention(x.unsqueeze(1), x.unsqueeze(1), x.unsqueeze(1))
         x = x.squeeze(1)
 
-        x = self.dropout_layer(x)
         # Final classification
         return self.fc(x)
     
@@ -100,11 +91,10 @@ class Model(nn.Module):
         X_tensor = torch.tensor(X, dtype=torch.long).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
 
-        train_dataset = TensorDataset(X_tensor, y_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        train_loader = DataLoader(TensorDataset(torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)), batch_size=32, shuffle=True)
 
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
-        criterion = nn.CrossEntropyLoss().to(self.device)
+        criterion = nn.BCELoss()
 
         self.train()
         for epoch in range(self.epochs):
@@ -113,24 +103,11 @@ class Model(nn.Module):
                 optimizer.zero_grad()
                 target = target.view(-1, 1)
                 output = self(data)  # Forward pass
-                loss = criterion(output, target)
+                loss = criterion(output, target.float())
                 loss.backward()
                 optimizer.step()
                 running_loss += loss.item()
 
-            avg_loss = running_loss / len(train_loader)
-
-    def predict(self, X):
-        X_tensor = torch.tensor(X, dtype=torch.long)
-        self.eval()
-        with torch.no_grad():
-            output = self(X_tensor)
-            _, predicted = torch.max(output, 1)
-        return predicted.numpy()
-
-    def score(self, X, y):
-        y_pred = self.predict(X)
-        return accuracy_score(y, y_pred)
 
     def save(self, filename):
         torch.save(self.state_dict(), filename)
@@ -193,12 +170,11 @@ class SAINT(BaseEstimator, ClassifierMixin):
             batch_size = int(params["batch_size"])
             dropout = float(params["dropout"])
 
-            model = Model(self.input_dim, hidden_dim=hidden_dim, batch_size=batch_size, lr=lr, epochs=epochs, dropout=dropout).to(self.device)
+            model = Model(self.input_dim, num_classes, hidden_dim=hidden_dim, batch_size=batch_size, lr=lr, epochs=epochs, dropout=dropout).to(self.device)
             
             model.fit(X_train, y_train)
 
             model.eval()
-            print(model.predict(X_test))
 
             X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
             y_prob = model(X_test_tensor).detach().numpy().flatten()
@@ -215,8 +191,8 @@ class SAINT(BaseEstimator, ClassifierMixin):
 
             # y_pred = (y_prob > best_threshold).astype(int)
             f1 = f1_score(y_test, y_pred, zero_division=1)
-            accuracy = accuracy_score(y_test, y_pred, zero_division=1)  # Loại bỏ dấu phẩy thừa
-            auc = roc_auc_score(y_test, y_prob, zero_division=1)
+            accuracy = accuracy_score(y_test, y_pred)  # Loại bỏ dấu phẩy thừa
+            auc = roc_auc_score(y_test, y_prob)
 
             results.append({
                 **params,
