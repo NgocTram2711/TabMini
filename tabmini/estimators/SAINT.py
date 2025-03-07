@@ -201,21 +201,22 @@ class SAINT(BaseEstimator, ClassifierMixin):
             print(model.predict(X_test))
 
             X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
-            y_prob = model.predict(X_test)
+            y_prob = model(X_test_tensor).detach().numpy().flatten()
             precision, recall, thresholds = precision_recall_curve(y_test, y_prob)
-
-            if len(thresholds) > 0:
-                # Tính f1 score cho từng threshold (bỏ phần tử cuối của precision và recall)
-                f1_scores = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-8)
-                best_threshold = thresholds[np.argmax(f1_scores)]
-            else:
-                best_threshold = 0.5
-
+            best_threshold = thresholds[np.argmax(precision * recall)] if len(thresholds) > 0 else 0.5
             y_pred = (y_prob > best_threshold).astype(int)
-            f1 = f1_score(y_test, y_pred, zero_division=1, average='weighted')
 
-            accuracy = accuracy_score(y_test, y_pred)  # Loại bỏ dấu phẩy thừa
-            auc = roc_auc_score(y_test, y_prob)
+            # if len(thresholds) > 0:
+            #     # Tính f1 score cho từng threshold (bỏ phần tử cuối của precision và recall)
+            #     f1_scores = 2 * precision[:-1] * recall[:-1] / (precision[:-1] + recall[:-1] + 1e-8)
+            #     best_threshold = thresholds[np.argmax(f1_scores)]
+            # else:
+            #     best_threshold = 0.5
+
+            # y_pred = (y_prob > best_threshold).astype(int)
+            f1 = f1_score(y_test, y_pred, zero_division=1)
+            accuracy = accuracy_score(y_test, y_pred, zero_division=1)  # Loại bỏ dấu phẩy thừa
+            auc = roc_auc_score(y_test, y_prob, zero_division=1)
 
             results.append({
                 **params,
